@@ -1,6 +1,5 @@
 import copy
 import re
-from six import string_types
 
 from samtranslator.metrics.method_decorator import cw_timer
 from samtranslator.model import ResourceMacro, PropertyType
@@ -23,6 +22,7 @@ from samtranslator.translator.arn_generator import ArnGenerator
 from samtranslator.model.exceptions import InvalidEventException, InvalidResourceException
 from samtranslator.swagger.swagger import SwaggerEditor
 from samtranslator.open_api.open_api import OpenApiEditor
+from samtranslator.utils.py27hash_fix import Py27Dict, Py27UniStr
 
 CONDITION = "Condition"
 
@@ -256,7 +256,7 @@ class S3(PushEventSource):
     def resources_to_link(self, resources):
         if isinstance(self.Bucket, dict) and "Ref" in self.Bucket:
             bucket_id = self.Bucket["Ref"]
-            if not isinstance(bucket_id, string_types):
+            if not isinstance(bucket_id, str):
                 raise InvalidEventException(self.relative_id, "'Ref' value in S3 events is not a valid string.")
             if bucket_id in resources:
                 return {"bucket": resources[bucket_id], "bucket_id": bucket_id}
@@ -325,7 +325,7 @@ class S3(PushEventSource):
         depends_on = bucket.get("DependsOn", [])
 
         # DependsOn can be either a list of strings or a scalar string
-        if isinstance(depends_on, string_types):
+        if isinstance(depends_on, str):
             depends_on = [depends_on]
 
         try:
@@ -376,7 +376,7 @@ class S3(PushEventSource):
             base_event_mapping["Filter"] = self.Filter
 
         event_types = self.Events
-        if isinstance(self.Events, string_types):
+        if isinstance(self.Events, str):
             event_types = [self.Events]
 
         event_mappings = []
@@ -556,7 +556,7 @@ class Api(PushEventSource):
         stage_suffix = "AllStages"
         explicit_api = None
         rest_api_id = self.get_rest_api_id_string(self.RestApiId)
-        if isinstance(rest_api_id, string_types):
+        if isinstance(rest_api_id, str):
 
             if (
                 rest_api_id in resources
@@ -568,7 +568,7 @@ class Api(PushEventSource):
                 permitted_stage = explicit_api["StageName"]
 
                 # Stage could be a intrinsic, in which case leave the suffix to default value
-                if isinstance(permitted_stage, string_types):
+                if isinstance(permitted_stage, str):
                     if not permitted_stage:
                         raise InvalidResourceException(rest_api_id, "StageName cannot be empty.")
                     stage_suffix = permitted_stage
@@ -663,15 +663,8 @@ class Api(PushEventSource):
         if swagger_body is None:
             return
 
-        function_arn = function.get_runtime_attr("arn")
         partition = ArnGenerator.get_partition_name()
-        uri = fnSub(
-            "arn:"
-            + partition
-            + ":apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/"
-            + make_shorthand(function_arn)
-            + "/invocations"
-        )
+        uri = _build_apigw_integration_uri(function, partition)
 
         editor = SwaggerEditor(swagger_body)
 
@@ -708,7 +701,7 @@ class Api(PushEventSource):
                             ),
                         )
 
-                    if not isinstance(method_authorizer, string_types):
+                    if not isinstance(method_authorizer, str):
                         raise InvalidEventException(
                             self.relative_id,
                             "Unable to set Authorizer [{authorizer}] on API method [{method}] for path [{path}] "
@@ -776,7 +769,7 @@ class Api(PushEventSource):
                             model=method_model, method=self.Method, path=self.Path
                         ),
                     )
-                if not isinstance(method_model, string_types):
+                if not isinstance(method_model, str):
                     raise InvalidEventException(
                         self.relative_id,
                         "Unable to set RequestModel [{model}] on API method [{method}] for path [{path}] "
@@ -861,7 +854,7 @@ class Api(PushEventSource):
 
                     parameters.append(settings)
 
-                elif isinstance(parameter, string_types):
+                elif isinstance(parameter, str):
                     if not re.match("method\.request\.(querystring|path|header)\.", parameter):
                         raise InvalidEventException(
                             self.relative_id,
@@ -976,7 +969,7 @@ class Cognito(PushEventSource):
     def resources_to_link(self, resources):
         if isinstance(self.UserPool, dict) and "Ref" in self.UserPool:
             userpool_id = self.UserPool["Ref"]
-            if not isinstance(userpool_id, string_types):
+            if not isinstance(userpool_id, str):
                 raise InvalidEventException(
                     self.logical_id,
                     "Ref in Userpool is not a string.",
@@ -1018,7 +1011,7 @@ class Cognito(PushEventSource):
 
     def _inject_lambda_config(self, function, userpool):
         event_triggers = self.Trigger
-        if isinstance(self.Trigger, string_types):
+        if isinstance(self.Trigger, str):
             event_triggers = [self.Trigger]
 
         # TODO can these be conditional?
@@ -1162,12 +1155,7 @@ class HttpApi(PushEventSource):
         if open_api_body is None:
             return
 
-        function_arn = function.get_runtime_attr("arn")
-        uri = fnSub(
-            "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/"
-            + make_shorthand(function_arn)
-            + "/invocations"
-        )
+        uri = _build_apigw_integration_uri(function, "${AWS::Partition}")
 
         editor = OpenApiEditor(open_api_body)
 
@@ -1208,7 +1196,7 @@ class HttpApi(PushEventSource):
         """
         method_authorizer = self.Auth.get("Authorizer")
 
-        if method_authorizer is not None and not isinstance(method_authorizer, string_types):
+        if method_authorizer is not None and not isinstance(method_authorizer, str):
             raise InvalidEventException(
                 self.relative_id,
                 "'Authorizer' in the 'Auth' section must be a string.",
@@ -1263,3 +1251,19 @@ class HttpApi(PushEventSource):
                 "'AuthorizationScopes' must be a list of strings.".format(method=self.Method, path=self.Path),
             )
         editor.add_auth_to_method(api=api, path=self.Path, method_name=self.Method, auth=self.Auth)
+
+
+def _build_apigw_integration_uri(function, partition):
+    function_arn = function.get_runtime_attr("arn")
+    arn = (
+        "arn:"
+        + partition
+        + ":apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/"
+        + make_shorthand(function_arn)
+        + "/invocations"
+    )
+    # function_arn is always of the form {"Fn::GetAtt": ["<function_logical_id>", "Arn"]}.
+    # We only want to check if the function logical id is a Py27UniStr instance.
+    if function_arn.get("Fn::GetAtt") and isinstance(function_arn["Fn::GetAtt"][0], Py27UniStr):
+        arn = Py27UniStr(arn)
+    return Py27Dict(fnSub(arn))

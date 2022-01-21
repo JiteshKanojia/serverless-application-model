@@ -3,6 +3,7 @@ import itertools
 import os.path
 import hashlib
 import sys
+import re
 from functools import reduce, cmp_to_key
 
 from samtranslator.translator.translator import Translator, prepare_plugins, make_policy_template_for_function_plugin
@@ -21,7 +22,7 @@ import pytest
 import yaml
 from unittest import TestCase
 from samtranslator.translator.transform import transform
-from mock import Mock, MagicMock, patch
+from unittest.mock import Mock, MagicMock, patch
 
 BASE_PATH = os.path.dirname(__file__)
 INPUT_FOLDER = BASE_PATH + "/input"
@@ -175,11 +176,6 @@ class AbstractTestTranslator(TestCase):
 
         print(json.dumps(output_fragment, indent=2))
 
-        # Only update the deployment Logical Id hash in Py3.
-        if sys.version_info.major >= 3:
-            self._update_logical_id_hash(expected)
-            self._update_logical_id_hash(output_fragment)
-
         self.assertEqual(deep_sort_lists(output_fragment), deep_sort_lists(expected))
 
     def _update_logical_id_hash(self, resources):
@@ -258,6 +254,7 @@ class TestTranslatorEndToEnd(AbstractTestTranslator):
     @parameterized.expand(
         itertools.product(
             [
+                "congito_userpool_with_sms_configuration",
                 "cognito_userpool_with_event",
                 "s3_with_condition",
                 "function_with_condition",
@@ -379,6 +376,7 @@ class TestTranslatorEndToEnd(AbstractTestTranslator):
                 "function_with_global_layers",
                 "function_with_layers",
                 "function_with_many_layers",
+                "function_with_null_events",
                 "function_with_permissions_boundary",
                 "function_with_policy_templates",
                 "function_with_sns_event_source_all_parameters",
@@ -447,6 +445,7 @@ class TestTranslatorEndToEnd(AbstractTestTranslator):
                 "state_machine_with_condition_and_events",
                 "state_machine_with_xray_policies",
                 "state_machine_with_xray_role",
+                "state_machine_with_null_events",
                 "function_with_file_system_config",
                 "state_machine_with_permissions_boundary",
                 "version_deletion_policy_precedence",
@@ -459,6 +458,9 @@ class TestTranslatorEndToEnd(AbstractTestTranslator):
                 "function_with_auth_mechanism_for_self_managed_kafka",
                 "function_with_vpc_permission_for_self_managed_kafka",
                 "function_with_event_filtering",
+                "api_with_security_definition_and_components",
+                "api_with_security_definition_and_none_components",
+                "api_with_security_definition_and_no_components",
             ],
             [
                 ("aws", "ap-southeast-1"),
@@ -559,11 +561,6 @@ class TestTranslatorEndToEnd(AbstractTestTranslator):
 
         print(json.dumps(output_fragment, indent=2))
 
-        # Only update the deployment Logical Id hash in Py3.
-        if sys.version_info.major >= 3:
-            self._update_logical_id_hash(expected)
-            self._update_logical_id_hash(output_fragment)
-
         self.assertEqual(deep_sort_lists(output_fragment), deep_sort_lists(expected))
 
     @parameterized.expand(
@@ -617,11 +614,6 @@ class TestTranslatorEndToEnd(AbstractTestTranslator):
 
             output_fragment = transform(manifest, parameter_values, mock_policy_loader)
         print(json.dumps(output_fragment, indent=2))
-
-        # Only update the deployment Logical Id hash in Py3.
-        if sys.version_info.major >= 3:
-            self._update_logical_id_hash(expected)
-            self._update_logical_id_hash(output_fragment)
 
         self.assertEqual(deep_sort_lists(output_fragment), deep_sort_lists(expected))
 
@@ -690,6 +682,7 @@ def test_transform_invalid_document(testcase):
         transform(manifest, parameter_values, mock_policy_loader)
 
     error_message = get_exception_error_message(e)
+    error_message = re.sub(r"u'([A-Za-z0-9]*)'", r"'\1'", error_message)
 
     assert error_message == expected.get("errorMessage")
 
@@ -1044,4 +1037,21 @@ def get_resource_by_type(template, type):
 
 
 def get_exception_error_message(e):
-    return reduce(lambda message, error: message + " " + error.message, e.value.causes, e.value.message)
+    return reduce(
+        lambda message, error: message + " " + error.message,
+        sorted(e.value.causes, key=_exception_sort_key),
+        e.value.message,
+    )
+
+
+def _exception_sort_key(cause):
+    """
+    Returns the key to be used for sorting among other exceptions
+    """
+    if hasattr(cause, "_logical_id"):
+        return cause._logical_id
+    if hasattr(cause, "_event_id"):
+        return cause._event_id
+    if hasattr(cause, "message"):
+        return cause.message
+    return str(cause)
